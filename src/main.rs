@@ -1,39 +1,72 @@
+use std::fmt;
 use std::io::{self, Write};
+
+type MetaCommandResult = Result<MetaCommand, MetaCommandError>;
 
 enum MetaCommand {
     Exit,
 }
 
-type MetaCommandResult = Result<MetaCommand, String>;
+impl MetaCommand {
+    fn new(input: &str) -> MetaCommandResult {
+        match input {
+            ".exit" => Ok(MetaCommand::Exit),
+            _ => Err(MetaCommandError::UnrecognizedCommand(input.to_string())),
+        }
+    }
+}
+
+enum MetaCommandError {
+    UnrecognizedCommand(String),
+}
+
+impl fmt::Display for MetaCommandError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            MetaCommandError::UnrecognizedCommand(s) => {
+                write!(f, "Unrecognized command '{}'.", s)
+            }
+        }
+    }
+}
+
+type PrepareResult = Result<Statement, StatementError>;
 
 enum Statement {
     Insert(String),
     Select(String),
 }
 
-type PrepareResult = Result<Statement, String>;
+impl Statement {
+    fn new(input: &str) -> PrepareResult {
+        if input.starts_with("insert") {
+            Ok(Statement::Insert(input.to_string()))
+        } else if input.starts_with("select") {
+            Ok(Statement::Select(input.to_string()))
+        } else {
+            Err(StatementError::UnrecognizedKeyword(input.to_string()))
+        }
+    }
 
-fn do_meta_command(input: &str) -> MetaCommandResult {
-    match input {
-        ".exit" => Ok(MetaCommand::Exit),
-        _ => Err(format!("Unrecognized command '{}'.", input)),
+    fn execute(&self) {
+        match self {
+            Statement::Insert(s) => println!("This is where we would do a insert."),
+            Statement::Select(s) => println!("This is where we would do a select."),
+        }
     }
 }
 
-fn prepare_statement(input: &str) -> PrepareResult {
-    if input.starts_with("insert") {
-        Ok(Statement::Insert(input.to_string()))
-    } else if input.starts_with("select") {
-        Ok(Statement::Select(input.to_string()))
-    } else {
-        Err(format!("Unrecognized keyword at start of '{}'", input))
-    }
+enum StatementError {
+    UnrecognizedKeyword(String),
 }
 
-fn execute_statement(statement: &Statement) {
-    match &statement {
-        Statement::Insert(s) => println!("This is where we would do a insert."),
-        Statement::Select(s) => println!("This is where we would do a select."),
+impl fmt::Display for StatementError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            StatementError::UnrecognizedKeyword(s) => {
+                write!(f, "Unrecognized keyword at start of '{}'.", s)
+            }
+        }
     }
 }
 
@@ -58,22 +91,21 @@ fn main() {
         let input = read_input();
 
         if input.starts_with('.') {
-            match do_meta_command(&input) {
+            match MetaCommand::new(&input) {
                 Ok(MetaCommand::Exit) => break,
-                Err(msg) => {
-                    println!("{}", msg);
+                Err(e) => {
+                    println!("{}", e);
                     continue;
                 }
             }
         }
 
-        let statement = prepare_statement(&input);
-        match statement {
+        match Statement::new(&input) {
             Ok(s) => {
-                execute_statement(&s);
+                s.execute();
             }
-            Err(msg) => {
-                println!("{}", msg);
+            Err(e) => {
+                println!("{}", e);
                 continue;
             }
         }
