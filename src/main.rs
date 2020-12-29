@@ -1,17 +1,39 @@
 use std::io::{self, Write};
 
-fn main() {
-    loop {
-        print_prompt();
+enum MetaCommand {
+    Exit,
+}
 
-        let input = read_input();
+type MetaCommandResult = Result<MetaCommand, String>;
 
-        match input.as_str() {
-            ".exit" => break,
-            _ => {
-                println!("Unrecognized command '{}'.", input)
-            }
-        }
+enum Statement {
+    Insert(String),
+    Select(String),
+}
+
+type PrepareResult = Result<Statement, String>;
+
+fn do_meta_command(input: &str) -> MetaCommandResult {
+    match input {
+        ".exit" => Ok(MetaCommand::Exit),
+        _ => Err(format!("Unrecognized command '{}'.", input)),
+    }
+}
+
+fn prepare_statement(input: &str) -> PrepareResult {
+    if input.starts_with("insert") {
+        Ok(Statement::Insert(input.to_string()))
+    } else if input.starts_with("select") {
+        Ok(Statement::Select(input.to_string()))
+    } else {
+        Err(format!("Unrecognized keyword at start of '{}'", input))
+    }
+}
+
+fn execute_statement(statement: &Statement) {
+    match &statement {
+        Statement::Insert(s) => println!("This is where we would do a insert."),
+        Statement::Select(s) => println!("This is where we would do a select."),
     }
 }
 
@@ -27,4 +49,35 @@ fn read_input() -> String {
         .expect("Error reading input");
 
     input_buffer.trim_end().to_string()
+}
+
+fn main() {
+    loop {
+        print_prompt();
+
+        let input = read_input();
+
+        if input.starts_with('.') {
+            match do_meta_command(&input) {
+                Ok(MetaCommand::Exit) => break,
+                Err(msg) => {
+                    println!("{}", msg);
+                    continue;
+                }
+            }
+        }
+
+        let statement = prepare_statement(&input);
+        match statement {
+            Ok(s) => {
+                execute_statement(&s);
+            }
+            Err(msg) => {
+                println!("{}", msg);
+                continue;
+            }
+        }
+
+        println!("Executed");
+    }
 }
