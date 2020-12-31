@@ -7,6 +7,9 @@ use std::{
     mem,
 };
 
+const COLUMN_USERNAME_SIZE: usize = 32;
+const COLUMN_EMAIL_SIZE: usize = 255;
+
 const ID_SIZE: usize = mem::size_of::<u32>();
 const STR_LEN_SIZE: usize = mem::size_of::<usize>();
 const USERNAME_SIZE: usize = 32 + STR_LEN_SIZE;
@@ -153,16 +156,29 @@ impl FromStr for Row {
     type Err = StatementError;
 
     fn from_str(s: &str) -> Result<Self, StatementError> {
-        let re = Regex::new(r"^insert\s(\d+)\s(.+)\s(.+)$").unwrap();
+        let re = Regex::new(r"^insert\s(.+)\s(.+)\s(.+)$").unwrap();
 
         match re.captures(&s) {
             Some(cap) => match cap[1].parse::<u32>() {
-                Ok(id) => Ok(Row {
-                    id,
-                    username: cap[2].to_string(),
-                    email: cap[3].to_string(),
-                }),
-                Err(_) => Err(StatementError::SyntaxError),
+                Ok(id) => {
+                    if cap[2].len() > COLUMN_USERNAME_SIZE || cap[3].len() > COLUMN_EMAIL_SIZE {
+                        Err(StatementError::StringTooLong)
+                    } else {
+                        Ok(Row {
+                            id,
+                            username: cap[2].to_string(),
+                            email: cap[3].to_string(),
+                        })
+                    }
+                }
+                Err(_) => {
+                    if let Ok(n) = cap[1].parse::<i32>() {
+                        if n < 0 {
+                            return Err(StatementError::NegativeId);
+                        }
+                    }
+                    Err(StatementError::SyntaxError)
+                }
             },
             None => Err(StatementError::SyntaxError),
         }
@@ -249,6 +265,8 @@ impl Statement {
 enum StatementError {
     UnrecognizedKeyword(String),
     SyntaxError,
+    StringTooLong,
+    NegativeId,
 }
 
 impl fmt::Display for StatementError {
@@ -259,6 +277,12 @@ impl fmt::Display for StatementError {
             }
             StatementError::SyntaxError => {
                 write!(f, "Syntax error. Could not parse statement.")
+            }
+            StatementError::StringTooLong => {
+                write!(f, "String is too long.")
+            }
+            StatementError::NegativeId => {
+                write!(f, "ID must be positive.")
             }
         }
     }
