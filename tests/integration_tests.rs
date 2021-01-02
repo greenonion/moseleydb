@@ -3,6 +3,7 @@ use std::process::{Command, Stdio};
 
 fn run_script(commands: Vec<String>) -> Vec<String> {
     let process = match Command::new("./target/debug/moseleydb")
+        .arg("mytestdb.db")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -106,4 +107,21 @@ fn print_error_when_id_negative() {
         out,
         vec!["db > ID must be positive.", "db > Executed.", "db > ",]
     )
+}
+
+#[test]
+fn keep_data_after_closing_connection() {
+    let result1 = run_script(vec![
+        "insert 1 user1 person1@example.com".to_string(),
+        ".exit".to_string(),
+    ]);
+
+    assert_eq!(result1, vec!["db > Executed.", "db > ",]);
+
+    let result2 = run_script(vec!["select".to_string(), ".exit".to_string()]);
+
+    assert_eq!(
+        result2,
+        vec!["db > (1, user1, person1@example.com)", "Executed.", "db > ",]
+    );
 }

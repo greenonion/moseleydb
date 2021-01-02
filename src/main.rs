@@ -1,7 +1,13 @@
 use regex::Regex;
-use std::convert::TryInto;
+use std::io::SeekFrom;
 use std::str;
+use std::{convert::TryInto, fs::OpenOptions};
+use std::{env, io::Seek};
 use std::{fmt, str::FromStr};
+use std::{
+    fs::{self, File},
+    io::Read,
+};
 use std::{
     io::{self, Write},
     mem,
@@ -25,17 +31,139 @@ const ROWS_PER_PAGE: usize = PAGE_SIZE / ROW_SIZE;
 const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
 #[derive(Debug)]
-struct Table {
-    num_rows: usize,
+struct Pager {
+    db_io: File,
+    file_length: u64,
     pages: Vec<Option<Page>>,
 }
 
-impl Table {
-    fn new() -> Self {
-        Table {
-            num_rows: 0,
-            pages: Vec::with_capacity(TABLE_MAX_PAGES),
+impl Pager {
+    fn open(file_name: &str) -> Self {
+        let db_io = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&file_name)
+            .expect("Unable to open file");
+
+        let file_length = fs::metadata(file_name)
+            .expect("Failed to get file metadata")
+            .len();
+
+        let mut pages: Vec<Option<Page>> = Vec::with_capacity(TABLE_MAX_PAGES);
+        for _ in 0..TABLE_MAX_PAGES {
+            pages.push(None);
         }
+
+        Pager {
+            db_io,
+            file_length,
+            pages,
+        }
+    }
+
+    fn get_page(&mut self, page_num: usize) -> Option<&mut Page> {
+        if page_num > TABLE_MAX_PAGES {
+            panic!(
+                "Tried to fetch page number out of bounds. {} > {}",
+                page_num, TABLE_MAX_PAGES
+            );
+        }
+
+        if self.pages[page_num].is_none() {
+            // Cache miss
+            let mut page = Page::new();
+            let mut num_pages: usize = self.file_length as usize / PAGE_SIZE;
+
+            // We might save a partial page at the end of the file
+            if self.file_length as usize % PAGE_SIZE != 0 {
+                num_pages += 1;
+            }
+
+            let offset = page_num * PAGE_SIZE;
+
+            self.db_io
+                .seek(SeekFrom::Start(offset as u64))
+                .expect("Error reading file.");
+
+            if page_num < num_pages {
+                if page_num == num_pages - 1 {
+                    let num_bytes = self.file_length as usize % PAGE_SIZE;
+                    self.db_io.read_exact(&mut page.data[..num_bytes]).unwrap();
+                } else {
+                    self.db_io.read_exact(&mut page.data).unwrap();
+                }
+            }
+
+            self.pages[page_num] = Some(page);
+        }
+
+        self.pages[page_num].as_mut()
+    }
+
+    fn insert(&mut self, page_num: usize, row: &Row, row_num: usize) {
+        let row_offset: usize = row_num % ROWS_PER_PAGE;
+
+        if let Some(page) = self.get_page(page_num) {
+            page.insert(row, row_offset);
+        }
+    }
+
+    fn flush_pages(&mut self, num_full_pages: usize, num_additional_rows: usize) {
+        for i in 0..num_full_pages {
+            self.flush_page(i, None);
+            self.pages[i] = None;
+        }
+
+        if num_additional_rows > 0 {
+            let page_num: usize = num_full_pages;
+            self.flush_page(page_num, Some(num_additional_rows));
+            self.pages[page_num] = None;
+        }
+    }
+
+    fn flush_page(&mut self, page_num: usize, num_rows: Option<usize>) {
+        if self.pages[page_num].is_none() {
+            panic!("Tried to flush null page.");
+        }
+
+        if let Some(page) = &self.pages[page_num] {
+            let offset = page_num * PAGE_SIZE;
+            self.db_io
+                .seek(SeekFrom::Start(offset as u64))
+                .expect("Error seeking.");
+
+            if let Some(num_rows) = num_rows {
+                // Only write specific number of rows
+                self.db_io
+                    .write_all(&page.data[..num_rows * ROW_SIZE])
+                    .expect("Error writing.")
+            } else {
+                self.db_io.write_all(&page.data).expect("Error writing.")
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Table {
+    pager: Pager,
+    num_rows: usize,
+}
+
+impl Table {
+    fn db_open(file_name: &str) -> Self {
+        let pager = Pager::open(file_name);
+        let num_rows = pager.file_length as usize / ROW_SIZE;
+
+        Table { pager, num_rows }
+    }
+
+    fn db_close(&mut self) {
+        let num_full_pages: usize = self.num_rows / ROWS_PER_PAGE;
+        let num_additional_rows: usize = self.num_rows % ROWS_PER_PAGE;
+
+        self.pager.flush_pages(num_full_pages, num_additional_rows);
     }
 
     fn insert(&mut self, row: &Row) -> ExecuteResult {
@@ -45,33 +173,26 @@ impl Table {
 
         let row_num = self.num_rows; // Append row at the end of the table
         let page_num: usize = row_num / ROWS_PER_PAGE;
-        let row_offset: usize = row_num % ROWS_PER_PAGE;
 
-        if let Some(Some(page)) = &mut self.pages.get_mut(page_num) {
-            page.insert(&row, row_offset);
-        } else {
-            let mut page = Page::new();
-            page.insert(&row, row_offset);
-
-            self.pages.resize_with(page_num + 1, || Some(Page::new()));
-            self.pages[page_num] = Some(page);
-        }
+        self.pager.insert(page_num, &row, row_num);
 
         self.num_rows += 1;
         Ok(())
     }
 
-    fn row_data_at_slot(&self, row_num: usize) -> Option<&[u8]> {
+    fn row_data_at_slot(&mut self, row_num: usize) -> Option<&[u8]> {
         let page_num: usize = row_num / ROWS_PER_PAGE;
         let row_offset: usize = row_num % ROWS_PER_PAGE;
         let byte_offset: usize = row_offset * ROW_SIZE;
-        if let Some(page) = &self.pages[page_num] {
+
+        if let Some(page) = self.pager.get_page(page_num) {
             Some(&page.data[byte_offset..byte_offset + ROW_SIZE])
         } else {
             None
         }
     }
-    fn select(&self) -> ExecuteResult {
+
+    fn select(&mut self) -> ExecuteResult {
         for row_num in 0..self.num_rows {
             if let Some(s) = self.row_data_at_slot(row_num) {
                 let row = Row::deserialize(s);
@@ -303,7 +424,13 @@ fn read_input() -> String {
 }
 
 fn main() {
-    let mut table = Table::new();
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        panic!("Must supply a database filename.");
+    }
+
+    let filename = &args[1];
+    let mut table = Table::db_open(&filename);
     loop {
         print_prompt();
 
@@ -311,7 +438,10 @@ fn main() {
 
         if input.starts_with('.') {
             match MetaCommand::new(&input) {
-                Ok(MetaCommand::Exit) => break,
+                Ok(MetaCommand::Exit) => {
+                    table.db_close();
+                    break;
+                }
                 Err(e) => {
                     println!("{}", e);
                     continue;
