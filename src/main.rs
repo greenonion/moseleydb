@@ -146,6 +146,62 @@ impl Pager {
 }
 
 #[derive(Debug)]
+struct Cursor<'cursor> {
+    table: &'cursor mut Table, // TODO: maybe just put the table inside a Box?
+    row_num: usize,
+    end_of_table: bool,
+}
+
+impl<'cursor> Cursor<'cursor> {
+    fn table_start(table: &'cursor mut Table) -> Self {
+        let end_of_table: bool = table.num_rows == 0;
+
+        Cursor {
+            table,
+            row_num: 0,
+            end_of_table,
+        }
+    }
+
+    fn table_end(table: &'cursor mut Table) -> Self {
+        let row_num = table.num_rows;
+
+        Cursor {
+            table,
+            row_num,
+            end_of_table: true,
+        }
+    }
+
+    // Insert row where cursor is pointing
+    fn insert_row(&mut self, row: &Row) {
+        let page_num: usize = self.row_num / ROWS_PER_PAGE;
+        self.table.pager.insert(page_num, &row, self.row_num);
+    }
+
+}
+
+impl<'cursor> Iterator for Cursor<'cursor> {
+    type Item = Row;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.row_num < self.table.num_rows {
+            let page_num: usize = self.row_num / ROWS_PER_PAGE;
+            let row_offset: usize = self.row_num % ROWS_PER_PAGE;
+            let byte_offset: usize = row_offset * ROW_SIZE;
+
+            self.row_num += 1;
+
+            if let Some(page) = self.table.pager.get_page(page_num) {
+                let row_data = &page.data[byte_offset..byte_offset + ROW_SIZE];
+                return Some(Row::deserialize(row_data));
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug)]
 struct Table {
     pager: Pager,
     num_rows: usize,
@@ -171,34 +227,19 @@ impl Table {
             return Err(ExecuteError::TableFull);
         }
 
-        let row_num = self.num_rows; // Append row at the end of the table
-        let page_num: usize = row_num / ROWS_PER_PAGE;
-
-        self.pager.insert(page_num, &row, row_num);
-
+        let mut cursor = Cursor::table_end(self);
+        cursor.insert_row(row);
         self.num_rows += 1;
+
         Ok(())
     }
 
-    fn row_data_at_slot(&mut self, row_num: usize) -> Option<&[u8]> {
-        let page_num: usize = row_num / ROWS_PER_PAGE;
-        let row_offset: usize = row_num % ROWS_PER_PAGE;
-        let byte_offset: usize = row_offset * ROW_SIZE;
-
-        if let Some(page) = self.pager.get_page(page_num) {
-            Some(&page.data[byte_offset..byte_offset + ROW_SIZE])
-        } else {
-            None
-        }
-    }
-
     fn select(&mut self) -> ExecuteResult {
-        for row_num in 0..self.num_rows {
-            if let Some(s) = self.row_data_at_slot(row_num) {
-                let row = Row::deserialize(s);
-                println!("{}", row);
-            }
+        let cursor = Cursor::table_start(self);
+        for row in cursor.into_iter() {
+            println!("{}", row);
         }
+
         Ok(())
     }
 }
@@ -214,7 +255,7 @@ impl Page {
         }
     }
 
-    // TOOD: Return result type here
+    // TODO: Return result type here
     fn insert(&mut self, row: &Row, offset: usize) {
         let byte_offset: usize = offset * ROW_SIZE;
         self.data[byte_offset..byte_offset + ROW_SIZE].copy_from_slice(&row.serialize());
@@ -377,7 +418,10 @@ impl Statement {
 
     fn execute(&self, table: &mut Table) -> ExecuteResult {
         match self {
-            Statement::Insert(row) => table.insert(row),
+            Statement::Insert(row) => {
+                //let cursor = Cursor::table_end(&mut table);
+                table.insert(row)
+            }
             Statement::Select(_) => table.select(),
         }
     }
